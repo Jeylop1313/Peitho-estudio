@@ -192,7 +192,7 @@ select option{background:#161B22;color:#E6EDF3;}
     <div class="classify-radio" id="classify-grid"></div>
 
     <div class="nav-row">
-      <button class="btn btn-secondary" onclick="back()"><i class="ti ti-arrow-left"></i> Atrás</button>
+      <button class="btn btn-secondary" id="btn-back" onclick="back()"><i class="ti ti-arrow-left"></i> Atrás</button>
       <button class="btn btn-primary" id="btn-next" onclick="goNext()">Siguiente <i class="ti ti-arrow-right"></i></button>
     </div>
   </div>
@@ -287,7 +287,7 @@ function apiGET(params) {
       delete window[cbName];
       document.body.removeChild(script);
       reject(new Error('Timeout'));
-    }, 15000);
+    }, 30000);   // Apps Script puede tardar en "despertar"
     window[cbName] = (data) => {
       clearTimeout(timeout);
       delete window[cbName];
@@ -308,7 +308,7 @@ async function apiPOST(params) {
 // ── 1. Login ─────────────────────────────────────────────────
 async function startSession() {
   if (_busy) return;
-  const v = document.getElementById('student-id').value.trim();
+  const v = document.getElementById('student-id').value.trim().toLowerCase();
   if (!v) { document.getElementById('student-id').focus(); return; }
   if (!v.includes('@') || !v.includes('.')) {
     showError('login-error', 'Por favor ingresa un correo electrónico válido.');
@@ -326,6 +326,10 @@ async function startSession() {
     dataset = res.dataset;
     const tw = await apiGET({ action: 'tweets', documento: v });
     if (tw.error) { showError('login-error', 'Error cargando tweets: ' + tw.error); return; }
+    if (!Array.isArray(tw.tweets) || tw.tweets.length === 0 || tw.tweets.some(t => t.error || !t.tweet)) {
+      showError('login-error', 'No se pudieron cargar los comentarios asignados. Contacta al responsable del estudio.');
+      return;
+    }
     TWEETS = tw.tweets;
     startHeartbeat();
     show('s-socio');
@@ -402,6 +406,9 @@ function loadComment(ci) {
     ? 'Siguiente comentario <i class="ti ti-arrow-right"></i>'
     : 'Finalizar <i class="ti ti-check"></i>';
   document.getElementById('btn-next').disabled = false;
+  // Un comentario ya guardado no se puede editar (el backend ignora duplicados),
+  // así que solo se permite volver desde el primero, hacia los datos personales.
+  document.getElementById('btn-back').style.visibility = ci > 0 ? 'hidden' : 'visible';
   show('s-comment');
 }
 
@@ -463,24 +470,25 @@ async function goNext() {
   btn.disabled = true;
   loading(true);
 
-  try {
-    await apiPOST(payload);
-  } catch(e) {
+  // El backend responde HTTP 200 también cuando rechaza la respuesta
+  // ({error: ...}), así que eso cuenta como fallo y no se avanza.
+  let saved = false, lastErr = null;
+  for (let intento = 0; intento < 2 && !saved; intento++) {   // reintentar una vez
     try {
-      await apiPOST(payload);     // reintentar una vez
-    } catch(e2) {
-      alert('No se pudo guardar la respuesta. Verifica tu conexión e intenta de nuevo.');
-      btn.disabled = false;
-      _busy = false;
-      loading(false);
-      return;                     // no avanzar si falla dos veces
-    }
-  } finally {
-    loading(false);
+      const res = await apiPOST(payload);
+      if (res && res.error) throw new Error(res.error);
+      saved = true;
+    } catch(e) { lastErr = e; }
   }
 
+  loading(false);
   btn.disabled = false;
   _busy = false;
+
+  if (!saved) {
+    alert('No se pudo guardar la respuesta' + (lastErr && lastErr.message ? ' (' + lastErr.message + ')' : '') + '. Verifica tu conexión e intenta de nuevo.');
+    return;                       // no avanzar si falla
+  }
 
   if (commentIdx + 1 < TWEETS.length) {
     loadComment(commentIdx + 1);
